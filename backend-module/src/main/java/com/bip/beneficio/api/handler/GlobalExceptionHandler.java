@@ -3,6 +3,7 @@ package com.bip.beneficio.api.handler;
 import com.bip.beneficio.api.dto.ApiErrorResponse;
 import com.bip.beneficio.api.dto.ApiErrorResponse.FieldErrorDetail;
 import com.bip.beneficio.domain.exception.*;
+import com.bip.beneficio.domain.exception.IdempotencyConflictException;
 import jakarta.persistence.OptimisticLockException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -126,6 +127,23 @@ public class GlobalExceptionHandler {
                 .build();
 
         log.warn("Duplicate resource: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ResponseEntity<ApiErrorResponse> handleIdempotencyConflict(
+            IdempotencyConflictException ex, HttpServletRequest request) {
+
+        ApiErrorResponse response = ApiErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .errorCode("IDEMPOTENCY_CONFLICT")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+
+        log.warn("Idempotency conflict at {}: {}", request.getRequestURI(), ex.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
     }
 

@@ -2,6 +2,7 @@
 -- Executado automaticamente no startup da aplicação em ambiente de desenvolvimento
 
 -- Limpa dados existentes (apenas para desenvolvimento)
+DELETE FROM transferencia;
 DELETE FROM beneficio;
 
 -- Insere dados de exemplo

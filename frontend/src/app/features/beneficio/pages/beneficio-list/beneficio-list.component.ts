@@ -3,6 +3,7 @@ import { CommonModule, CurrencyPipe, DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { BeneficioService } from '../../../../core/services/beneficio.service';
+import { ToastService } from '../../../../core/services/toast.service';
 import { Beneficio, PageResponse } from '../../../../core/models/beneficio.model';
 
 @Component({
@@ -20,13 +21,6 @@ import { Beneficio, PageResponse } from '../../../../core/models/beneficio.model
         Novo Benefício
       </a>
     </div>
-
-    @if (mensagem()) {
-      <div class="alert" [class.alert-success]="mensagemTipo() === 'success'" [class.alert-error]="mensagemTipo() === 'error'">
-        {{ mensagem() }}
-        <button class="close-btn" (click)="limparMensagem()">×</button>
-      </div>
-    }
 
     <div class="card">
       <div class="filters">
@@ -250,15 +244,13 @@ import { Beneficio, PageResponse } from '../../../../core/models/beneficio.model
 export class BeneficioListComponent implements OnInit {
   private readonly service = inject(BeneficioService);
   private readonly router = inject(Router);
+  private readonly toast = inject(ToastService);
 
   beneficios = signal<Beneficio[]>([]);
   carregando = signal(false);
   paginaAtual = signal(0);
   totalPaginas = signal(0);
   totalElementos = signal(0);
-
-  mensagem = signal('');
-  mensagemTipo = signal<'success' | 'error'>('success');
 
   beneficioParaExcluir = signal<Beneficio | null>(null);
 
@@ -279,7 +271,7 @@ export class BeneficioListComponent implements OnInit {
         this.carregando.set(false);
       },
       error: (err) => {
-        this.mostrarMensagem(err.userMessage || 'Erro ao carregar benefícios', 'error');
+        this.toast.error(err.userMessage || 'Erro ao carregar benefícios');
         this.carregando.set(false);
       }
     });
@@ -308,14 +300,11 @@ export class BeneficioListComponent implements OnInit {
     const acao = beneficio.ativo ? this.service.desativar(beneficio.id) : this.service.ativar(beneficio.id);
     acao.subscribe({
       next: () => {
-        this.mostrarMensagem(
-          `Benefício ${beneficio.ativo ? 'desativado' : 'ativado'} com sucesso`,
-          'success'
-        );
+        this.toast.success(`Benefício ${beneficio.ativo ? 'desativado' : 'ativado'} com sucesso`);
         this.carregar();
       },
       error: (err) => {
-        this.mostrarMensagem(err.userMessage || 'Erro ao alterar status', 'error');
+        this.toast.error(err.userMessage || 'Erro ao alterar status');
       }
     });
   }
@@ -334,24 +323,15 @@ export class BeneficioListComponent implements OnInit {
 
     this.service.remover(beneficio.id).subscribe({
       next: () => {
-        this.mostrarMensagem('Benefício excluído com sucesso', 'success');
+        this.toast.success(`Benefício "${beneficio.nome}" excluído com sucesso`);
         this.cancelarExclusao();
         this.carregar();
       },
       error: (err) => {
-        this.mostrarMensagem(err.userMessage || 'Erro ao excluir benefício', 'error');
+        this.toast.error(err.userMessage || 'Erro ao excluir benefício');
         this.cancelarExclusao();
       }
     });
   }
 
-  mostrarMensagem(texto: string, tipo: 'success' | 'error'): void {
-    this.mensagem.set(texto);
-    this.mensagemTipo.set(tipo);
-    setTimeout(() => this.limparMensagem(), 5000);
-  }
-
-  limparMensagem(): void {
-    this.mensagem.set('');
-  }
 }

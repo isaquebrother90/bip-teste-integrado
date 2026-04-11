@@ -3,6 +3,7 @@ package com.bip.beneficio.domain.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.SQLRestriction;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
@@ -15,7 +16,9 @@ import java.time.LocalDateTime;
  * lost updates em operações concorrentes. Em operações críticas como transferências,
  * também é utilizado Pessimistic Locking no repositório.</p>
  *
- * <p>A lógica de negócio (validações, débito, crédito) está implementada na camada de serviço.</p>
+ * <p><b>Soft Delete</b>: registros nunca são deletados fisicamente. O campo {@code deletadoEm}
+ * marca o momento da exclusão. A anotação {@code @SQLRestriction} filtra automaticamente
+ * todos os registros deletados em qualquer consulta JPA, sem necessidade de filtro manual.</p>
  *
  * @see com.bip.beneficio.domain.service.BeneficioService Service com lógica de negócio
  * @see com.bip.beneficio.domain.repository.BeneficioRepository Repository com pessimistic lock
@@ -23,8 +26,10 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "beneficio", indexes = {
         @Index(name = "idx_beneficio_nome", columnList = "nome"),
-        @Index(name = "idx_beneficio_ativo", columnList = "ativo")
+        @Index(name = "idx_beneficio_ativo", columnList = "ativo"),
+        @Index(name = "idx_beneficio_deletado", columnList = "deletado_em")
 })
+@SQLRestriction("deletado_em IS NULL")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -66,4 +71,20 @@ public class Beneficio {
     @UpdateTimestamp
     @Column(name = "atualizado_em")
     private LocalDateTime atualizadoEm;
+
+    /**
+     * Data/hora de remoção lógica (soft delete).
+     * Nulo = registro ativo. Preenchido = removido.
+     * O filtro {@code @SQLRestriction("deletado_em IS NULL")} garante que registros
+     * deletados nunca aparecem em consultas JPA normais.
+     */
+    @Column(name = "deletado_em")
+    private LocalDateTime deletadoEm;
+
+    /**
+     * Motivo da remoção — rastreabilidade operacional.
+     * Exemplo: "Benefício encerrado por reestruturação", "Duplicado de #42".
+     */
+    @Column(name = "motivo_desativacao", length = 255)
+    private String motivoDesativacao;
 }

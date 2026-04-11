@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -39,6 +39,9 @@ class BeneficioServiceTest {
 
     @Mock
     private BeneficioMapper mapper;
+
+    @Mock
+    private TransferenciaService transferenciaService;
 
     @InjectMocks
     private BeneficioServiceImpl service;
@@ -310,14 +313,14 @@ class BeneficioServiceTest {
     class RemocaoTests {
 
         @Test
-        @DisplayName("Deve remover benefício com sucesso")
+        @DisplayName("Deve remover benefício com sucesso (soft delete)")
         void deveRemoverBeneficioComSucesso() {
             when(repository.existsById(1L)).thenReturn(true);
-            doNothing().when(repository).deleteById(1L);
 
             service.remover(1L);
 
-            verify(repository).deleteById(1L);
+            verify(repository).softDeleteById(eq(1L), any(), isNull());
+            verify(repository, never()).deleteById(any());
         }
 
         @Test
@@ -326,36 +329,16 @@ class BeneficioServiceTest {
             when(repository.existsById(99L)).thenReturn(false);
 
             assertThrows(ResourceNotFoundException.class, () -> service.remover(99L));
-            verify(repository, never()).deleteById(any());
+            verify(repository, never()).softDeleteById(any(), any(), any());
         }
     }
 
     @Nested
-    @DisplayName("Testes de transferência")
+    @DisplayName("Testes de transferência (delegação para TransferenciaService)")
     class TransferenciaTests {
 
-        private Beneficio origem;
-        private Beneficio destino;
-
-        @BeforeEach
-        void setUp() {
-            origem = Beneficio.builder()
-                    .id(1L)
-                    .nome("Origem")
-                    .valor(new BigDecimal("1000.00"))
-                    .version(0L)
-                    .build();
-
-            destino = Beneficio.builder()
-                    .id(2L)
-                    .nome("Destino")
-                    .valor(new BigDecimal("500.00"))
-                    .version(0L)
-                    .build();
-        }
-
         @Test
-        @DisplayName("Deve realizar transferência com sucesso")
+        @DisplayName("Deve delegar transferência ao TransferenciaService e retornar resultado")
         void deveRealizarTransferenciaComSucesso() {
             TransferenciaDTO dto = TransferenciaDTO.builder()
                     .origemId(1L)
@@ -363,20 +346,24 @@ class BeneficioServiceTest {
                     .valor(new BigDecimal("300.00"))
                     .build();
 
-            when(repository.findByIdWithLock(1L)).thenReturn(Optional.of(origem));
-            when(repository.findByIdWithLock(2L)).thenReturn(Optional.of(destino));
-            when(repository.save(any(Beneficio.class))).thenAnswer(i -> i.getArgument(0));
+            TransferenciaResultadoDTO esperado = TransferenciaResultadoDTO.builder()
+                    .sucesso(true)
+                    .saldoOrigem(new BigDecimal("700.00"))
+                    .saldoDestino(new BigDecimal("800.00"))
+                    .build();
+
+            when(transferenciaService.transferir(dto)).thenReturn(esperado);
 
             TransferenciaResultadoDTO resultado = service.transferir(dto);
 
             assertTrue(resultado.isSucesso());
             assertEquals(new BigDecimal("700.00"), resultado.getSaldoOrigem());
-            assertEquals(new BigDecimal("800.00"), resultado.getSaldoDestino());
-            verify(repository, times(2)).save(any(Beneficio.class));
+            verify(transferenciaService).transferir(dto);
+            verify(repository, never()).findByIdWithLock(any());
         }
 
         @Test
-        @DisplayName("Deve lançar exceção quando saldo insuficiente")
+        @DisplayName("Deve propagar InsufficientBalanceException do TransferenciaService")
         void deveLancarExcecaoQuandoSaldoInsuficiente() {
             TransferenciaDTO dto = TransferenciaDTO.builder()
                     .origemId(1L)
@@ -384,15 +371,14 @@ class BeneficioServiceTest {
                     .valor(new BigDecimal("2000.00"))
                     .build();
 
-            when(repository.findByIdWithLock(1L)).thenReturn(Optional.of(origem));
-            when(repository.findByIdWithLock(2L)).thenReturn(Optional.of(destino));
+            when(transferenciaService.transferir(dto))
+                    .thenThrow(new InsufficientBalanceException(1L, new BigDecimal("1000.00"), new BigDecimal("2000.00")));
 
             assertThrows(InsufficientBalanceException.class, () -> service.transferir(dto));
-            verify(repository, never()).save(any());
         }
 
         @Test
-        @DisplayName("Deve lançar exceção quando origem igual a destino")
+        @DisplayName("Deve propagar BusinessException do TransferenciaService quando origem igual a destino")
         void deveLancarExcecaoQuandoOrigemIgualDestino() {
             TransferenciaDTO dto = TransferenciaDTO.builder()
                     .origemId(1L)
@@ -400,12 +386,14 @@ class BeneficioServiceTest {
                     .valor(new BigDecimal("100.00"))
                     .build();
 
+            when(transferenciaService.transferir(dto))
+                    .thenThrow(new BusinessException("Origem e destino não podem ser iguais"));
+
             assertThrows(BusinessException.class, () -> service.transferir(dto));
-            verify(repository, never()).findByIdWithLock(any());
         }
 
         @Test
-        @DisplayName("Deve lançar exceção quando origem não encontrada")
+        @DisplayName("Deve propagar ResourceNotFoundException do TransferenciaService")
         void deveLancarExcecaoQuandoOrigemNaoEncontrada() {
             TransferenciaDTO dto = TransferenciaDTO.builder()
                     .origemId(99L)
@@ -413,8 +401,8 @@ class BeneficioServiceTest {
                     .valor(new BigDecimal("100.00"))
                     .build();
 
-            when(repository.findByIdWithLock(2L)).thenReturn(Optional.of(destino));
-            when(repository.findByIdWithLock(99L)).thenReturn(Optional.empty());
+            when(transferenciaService.transferir(dto))
+                    .thenThrow(new ResourceNotFoundException("Benefício", "id", 99L));
 
             assertThrows(ResourceNotFoundException.class, () -> service.transferir(dto));
         }

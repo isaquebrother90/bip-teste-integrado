@@ -6,16 +6,18 @@ import com.bip.beneficio.domain.entity.Beneficio;
 import com.bip.beneficio.domain.exception.*;
 import com.bip.beneficio.domain.repository.BeneficioRepository;
 import com.bip.beneficio.domain.service.BeneficioService;
+import com.bip.beneficio.domain.service.TransferenciaService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
@@ -44,9 +46,20 @@ public class BeneficioServiceImpl implements BeneficioService {
 
     private final BeneficioRepository repository;
     private final BeneficioMapper mapper;
+    private final TransferenciaService transferenciaService;
 
     private static final String BENEFICIO = "Benefício";
     private static final String ID = "id";
+
+    @Override
+    @Cacheable(value = "beneficios-metadata", key = "#nome + '_' + #pageable.pageNumber + '_' + #pageable.pageSize")
+    public Page<BeneficioMetadataDTO> buscarMetadados(String nome, Pageable pageable) {
+        log.debug("Buscando metadados (cached): nome={}", nome);
+        if (nome != null && !nome.isBlank()) {
+            return repository.findByNomeContainingIgnoreCase(nome, pageable).map(mapper::toMetadataDTO);
+        }
+        return repository.findAll(pageable).map(mapper::toMetadataDTO);
+    }
 
     @Override
     public Page<BeneficioDTO> listarTodos(Pageable pageable) {
@@ -78,6 +91,7 @@ public class BeneficioServiceImpl implements BeneficioService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "beneficios-metadata", allEntries = true)
     public BeneficioDTO criar(BeneficioCreateDTO dto) {
         log.info("Criando novo benefício: {}", dto.getNome());
 
@@ -94,6 +108,7 @@ public class BeneficioServiceImpl implements BeneficioService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "beneficios-metadata", allEntries = true)
     public BeneficioDTO atualizar(Long id, BeneficioUpdateDTO dto) {
         log.info("Atualizando benefício: ID={}", id);
 
@@ -124,15 +139,46 @@ public class BeneficioServiceImpl implements BeneficioService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "beneficios-metadata", allEntries = true)
     public void remover(Long id) {
-        log.info("Removendo benefício: ID={}", id);
+        removerComMotivo(id, null);
+    }
+
+    @Override
+    @Transactional
+    public void removerComMotivo(Long id, String motivo) {
+        log.info("Removendo benefício (soft delete): ID={}, motivo={}", id, motivo);
 
         if (!repository.existsById(id)) {
             throw new ResourceNotFoundException(BENEFICIO, ID, id);
         }
 
-        repository.deleteById(id);
-        log.info("Benefício removido com sucesso: ID={}", id);
+        // @Modifying(clearAutomatically=true) invalida o L1 cache após o UPDATE,
+        // garantindo que findById subsequente vá ao banco e respeite o @SQLRestriction
+        repository.softDeleteById(id, LocalDateTime.now(), motivo);
+
+        log.info("Benefício removido com sucesso (soft delete): ID={}", id);
+    }
+
+    @Override
+    @Transactional
+    public BeneficioDTO restaurar(Long id) {
+        log.info("Restaurando benefício: ID={}", id);
+
+        // @SQLRestriction filtra deletados, então precisamos de query nativa
+        Beneficio beneficio = repository.findByIdIncluindoDeletados(id)
+                .orElseThrow(() -> new ResourceNotFoundException(BENEFICIO, ID, id));
+
+        if (beneficio.getDeletadoEm() == null) {
+            throw new BusinessException("Benefício ID=" + id + " não está removido.");
+        }
+
+        beneficio.setDeletadoEm(null);
+        beneficio.setMotivoDesativacao(null);
+        beneficio = repository.save(beneficio);
+
+        log.info("Benefício restaurado com sucesso: ID={}", id);
+        return mapper.toDTO(beneficio);
     }
 
     @Override
@@ -166,91 +212,12 @@ public class BeneficioServiceImpl implements BeneficioService {
     }
 
     /**
-     * Transfere valor entre benefícios.
-     *
-     * Implementação completamente reescrita para corrigir problemas do EJB original:
-     * - Valida origem != destino (implementação anterior permitia transferência para o próprio benefício)
-     * - Verifica saldo antes de realizar o débito
-     * - Utiliza pessimistic lock (findByIdWithLock) para evitar lost updates
-     * - Ordena aquisição de locks por ID para evitar deadlocks (sempre menor ID primeiro)
-     * - Isolamento SERIALIZABLE para garantir ausência de race conditions
-     * - Rollback automático em caso de falha
+     * @deprecated Delegado para {@link TransferenciaService}.
+     * Use POST /v1/transferencias diretamente para obter rastreamento completo de auditoria.
      */
     @Override
-    @Transactional(isolation = Isolation.SERIALIZABLE)
+    @Deprecated(since = "2.0", forRemoval = true)
     public TransferenciaResultadoDTO transferir(TransferenciaDTO dto) {
-        log.info("Iniciando transferência: origem={}, destino={}, valor={}",
-                dto.getOrigemId(), dto.getDestinoId(), dto.getValor());
-
-        //Impede transferência para o mesmo benefício
-        if (dto.getOrigemId().equals(dto.getDestinoId())) {
-            throw new BusinessException("Origem e destino não podem ser iguais");
-        }
-
-        //Adquire locks sempre na mesma ordem (menor ID primeiro) para evitar deadlocks
-        Long primeiroId = Math.min(dto.getOrigemId(), dto.getDestinoId());
-        Long segundoId = Math.max(dto.getOrigemId(), dto.getDestinoId());
-
-        //Busca com lock pessimista (SELECT ... FOR UPDATE)
-        Beneficio primeiro = repository.findByIdWithLock(primeiroId)
-                .orElseThrow(() -> new ResourceNotFoundException(BENEFICIO, ID, primeiroId));
-
-        Beneficio segundo = repository.findByIdWithLock(segundoId)
-                .orElseThrow(() -> new ResourceNotFoundException(BENEFICIO, ID, segundoId));
-
-        //Identifica qual registro é origem e qual é destino
-        Beneficio origem = dto.getOrigemId().equals(primeiroId) ? primeiro : segundo;
-        Beneficio destino = dto.getOrigemId().equals(primeiroId) ? segundo : primeiro;
-
-        validarMontante(dto.getValor());
-
-        if (!possuiSaldoSuficiente(origem, dto.getValor())) {
-            throw new InsufficientBalanceException(
-                    origem.getId(),
-                    origem.getValor(),
-                    dto.getValor()
-            );
-        }
-
-        debitar(origem, dto.getValor());
-        creditar(destino, dto.getValor());
-
-        repository.save(origem);
-        repository.save(destino);
-
-        log.info("Transferência concluída com sucesso: origem={} (saldo={}), destino={} (saldo={})",
-                origem.getId(), origem.getValor(), destino.getId(), destino.getValor());
-
-        return TransferenciaResultadoDTO.builder()
-                .sucesso(true)
-                .mensagem("Transferência realizada com sucesso")
-                .valorTransferido(dto.getValor())
-                .saldoOrigem(origem.getValor())
-                .saldoDestino(destino.getValor())
-                .dataTransferencia(LocalDateTime.now())
-                .build();
-    }
-
-    private void validarMontante(BigDecimal montante) {
-        if (montante == null) {
-            throw new IllegalArgumentException("Montante não pode ser nulo");
-        }
-        if (montante.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("Montante deve ser maior que zero");
-        }
-    }
-
-    private boolean possuiSaldoSuficiente(Beneficio beneficio, BigDecimal montante) {
-        return beneficio.getValor() != null &&
-               montante != null &&
-               beneficio.getValor().compareTo(montante) >= 0;
-    }
-
-    private void debitar(Beneficio beneficio, BigDecimal montante) {
-        beneficio.setValor(beneficio.getValor().subtract(montante));
-    }
-
-    private void creditar(Beneficio beneficio, BigDecimal montante) {
-        beneficio.setValor(beneficio.getValor().add(montante));
+        return transferenciaService.transferir(dto);
     }
 }

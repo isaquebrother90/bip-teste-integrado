@@ -2,6 +2,7 @@ package com.bip.beneficio.api.controller;
 
 import com.bip.beneficio.api.dto.*;
 import com.bip.beneficio.domain.service.BeneficioService;
+import com.bip.beneficio.domain.service.TransferenciaService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -16,7 +17,6 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -30,6 +30,7 @@ import java.net.URI;
 public class BeneficioController {
 
     private final BeneficioService service;
+    private final TransferenciaService transferenciaService;
 
     @GetMapping
     @Operation(summary = "Listar benefícios", description = "Retorna lista paginada de benefícios")
@@ -81,6 +82,20 @@ public class BeneficioController {
         return ResponseEntity.ok(service.buscarPorNome(nome, pageable));
     }
 
+    @GetMapping("/metadata")
+    @Operation(summary = "Buscar metadados de benefícios (cacheado)",
+            description = "Retorna nome/descrição/status sem o campo valor. Resultado cacheado por 5 min. " +
+                          "Use GET /{id} para saldo atualizado.")
+    @ApiResponse(responseCode = "200", description = "Metadados retornados com sucesso")
+    public ResponseEntity<Page<BeneficioMetadataDTO>> buscarMetadados(
+            @Parameter(description = "Filtro por nome (opcional)")
+            @RequestParam(required = false) String nome,
+            @PageableDefault(size = 10, sort = "nome") Pageable pageable) {
+
+        log.debug("GET /v1/beneficios/metadata - nome={}", nome);
+        return ResponseEntity.ok(service.buscarMetadados(nome, pageable));
+    }
+
     @PostMapping
     @Operation(summary = "Criar benefício", description = "Cria um novo benefício")
     @ApiResponses({
@@ -122,7 +137,8 @@ public class BeneficioController {
     }
 
     @DeleteMapping("/{id}")
-    @Operation(summary = "Remover benefício", description = "Remove um benefício pelo ID")
+    @Operation(summary = "Remover benefício (soft delete)",
+            description = "Remove logicamente um benefício. O registro é preservado para auditoria.")
     @ApiResponses({
             @ApiResponse(responseCode = "204", description = "Benefício removido com sucesso"),
             @ApiResponse(responseCode = "404", description = "Benefício não encontrado",
@@ -130,11 +146,42 @@ public class BeneficioController {
     })
     public ResponseEntity<Void> remover(
             @Parameter(description = "ID do benefício", required = true)
+            @PathVariable Long id,
+            @Parameter(description = "Motivo da remoção (opcional)")
+            @RequestParam(required = false) String motivo) {
+
+        log.debug("DELETE /v1/beneficios/{} - motivo={}", id, motivo);
+        service.removerComMotivo(id, motivo);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PatchMapping("/{id}/restaurar")
+    @Operation(summary = "Restaurar benefício removido",
+            description = "Restaura um benefício que foi removido via soft delete")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Benefício restaurado com sucesso"),
+            @ApiResponse(responseCode = "404", description = "Benefício não encontrado",
+                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
+    })
+    public ResponseEntity<BeneficioDTO> restaurar(
+            @Parameter(description = "ID do benefício", required = true)
             @PathVariable Long id) {
 
-        log.debug("DELETE /v1/beneficios/{}", id);
-        service.remover(id);
-        return ResponseEntity.noContent().build();
+        log.debug("PATCH /v1/beneficios/{}/restaurar", id);
+        return ResponseEntity.ok(service.restaurar(id));
+    }
+
+    @GetMapping("/{id}/historico")
+    @Operation(summary = "Histórico de transferências do benefício",
+            description = "Retorna todas as transferências (como origem ou destino) de um benefício")
+    @ApiResponse(responseCode = "200", description = "Histórico retornado com sucesso")
+    public ResponseEntity<Page<TransferenciaAuditoriaDTO>> historico(
+            @Parameter(description = "ID do benefício", required = true)
+            @PathVariable Long id,
+            @PageableDefault(size = 20, sort = "iniciadaEm", direction = Sort.Direction.DESC) Pageable pageable) {
+
+        log.debug("GET /v1/beneficios/{}/historico", id);
+        return ResponseEntity.ok(transferenciaService.listarPorBeneficio(id, pageable));
     }
 
     @PatchMapping("/{id}/ativar")

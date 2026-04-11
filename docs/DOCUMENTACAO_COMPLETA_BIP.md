@@ -34,12 +34,14 @@ Sistema fullstack para gerenciamento de benefícios corporativos, desenvolvido c
 #### Backend
 - Java 17
 - Spring Boot 3.2.5
-- Spring Data JPA
+- Spring Data JPA / Hibernate 6
 - H2 Database (dev) / PostgreSQL (prod)
 - MapStruct (mapeamento DTO/Entity)
 - Lombok (redução de boilerplate)
 - OpenAPI/Swagger (documentação)
 - JUnit 5 + Mockito (testes)
+- **Caffeine** (cache em memória)
+- **Micrometer + Prometheus** (métricas)
 
 #### Frontend
 - Angular 18
@@ -64,12 +66,15 @@ Sistema fullstack para gerenciamento de benefícios corporativos, desenvolvido c
 ┌─────────────────────────────────────────────────────────┐
 │                   PRESENTATION LAYER                    │
 │              (Angular 18 - Frontend SPA)                │
+│  - LoadingInterceptor (barra global de progresso)       │
+│  - ToastService / ToastComponent (notificações)         │
 └────────────────────┬────────────────────────────────────┘
                      │ HTTP/REST
 ┌────────────────────┴────────────────────────────────────┐
 │                     API LAYER                           │
 │          (Controllers + DTOs + Mappers)                 │
 │  - BeneficioController                                  │
+│  - TransferenciaController  ← NOVO                      │
 │  - GlobalExceptionHandler                               │
 │  - OpenAPI/Swagger Documentation                        │
 └────────────────────┬────────────────────────────────────┘
@@ -78,27 +83,33 @@ Sistema fullstack para gerenciamento de benefícios corporativos, desenvolvido c
 │                   SERVICE LAYER                         │
 │               (Business Logic)                          │
 │  - BeneficioService / BeneficioServiceImpl              │
-│  - Validações de negócio                                │
-│  - Coordenação de transações                            │
-│  - Gerenciamento de locks                               │
+│  - TransferenciaService / TransferenciaServiceImpl ← NOVO│
+│  - Validações de negócio + idempotência                 │
+│  - Coordenação de transações e locks                    │
+│  - Métricas de negócio (Micrometer)                     │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────┴────────────────────────────────────┐
 │                  REPOSITORY LAYER                       │
 │              (Data Access)                              │
 │  - BeneficioRepository (Spring Data JPA)                │
+│  - TransferenciaRepository  ← NOVO                      │
 │  - Pessimistic/Optimistic Locking                       │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────┴────────────────────────────────────┐
 │                   DOMAIN LAYER                          │
 │                  (Entities)                             │
-│  - Beneficio (JPA Entity)                               │
+│  - Beneficio (soft delete, @SQLRestriction)  ← ATUALIZADO│
+│  - Transferencia (máquina de estados)  ← NOVO           │
+│  - TransferenciaStatus (enum)  ← NOVO                   │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────┴────────────────────────────────────┐
 │                DATABASE LAYER                           │
 │       H2 (dev) / PostgreSQL (prod)                      │
+│  - tabela beneficio (+ deletado_em, motivo_desativacao) │
+│  - tabela transferencia (registro imutável)  ← NOVO     │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -310,37 +321,48 @@ public class GlobalExceptionHandler {
 backend-module/src/main/java/com/bip/beneficio/
 ├── api/
 │   ├── controller/
-│   │   └── BeneficioController.java          # REST endpoints
+│   │   ├── BeneficioController.java          # REST endpoints (+ soft delete, restaurar, historico)
+│   │   └── TransferenciaController.java      # NOVO: endpoints de auditoria de transferências
 │   ├── dto/
 │   │   ├── ApiErrorResponse.java             # Resposta de erro padronizada
 │   │   ├── BeneficioDTO.java                 # DTO de resposta
 │   │   ├── BeneficioCreateDTO.java           # DTO de criação
 │   │   ├── BeneficioUpdateDTO.java           # DTO de atualização
-│   │   ├── TransferenciaDTO.java             # DTO de transferência
-│   │   └── TransferenciaResultadoDTO.java    # DTO resultado transferência
+│   │   ├── BeneficioMetadataDTO.java         # NOVO: DTO sem campo valor (para cache)
+│   │   ├── TransferenciaDTO.java             # DTO de transferência (+ correlacaoId)
+│   │   ├── TransferenciaResultadoDTO.java    # DTO resultado (+ transferenciaId, correlacaoId)
+│   │   └── TransferenciaAuditoriaDTO.java    # NOVO: DTO de auditoria com snapshots de saldo
 │   ├── handler/
-│   │   └── GlobalExceptionHandler.java       # Tratamento global de erros
+│   │   └── GlobalExceptionHandler.java       # Tratamento global (+ IdempotencyConflictException)
 │   └── mapper/
-│       └── BeneficioMapper.java              # MapStruct mapper
+│       └── BeneficioMapper.java              # MapStruct mapper (+ toMetadataDTO)
 ├── config/
+│   ├── CacheConfig.java                      # NOVO: Caffeine cache (TTL 5min, max 500 entradas)
+│   ├── MetricasConfig.java                   # NOVO: Gauges Micrometer de negócio
 │   ├── OpenApiConfig.java                    # Configuração Swagger
 │   └── WebConfig.java                        # Configuração CORS
 ├── domain/
 │   ├── entity/
-│   │   └── Beneficio.java                    # Entidade JPA
+│   │   ├── Beneficio.java                    # ATUALIZADO: soft delete + @SQLRestriction
+│   │   ├── Transferencia.java                # NOVO: entidade de auditoria financeira
+│   │   └── TransferenciaStatus.java          # NOVO: enum de máquina de estados
 │   ├── exception/
-│   │   ├── BusinessException.java            # Exception base de negócio
-│   │   ├── ResourceNotFoundException.java    # 404
-│   │   ├── InsufficientBalanceException.java # Saldo insuficiente
-│   │   ├── ConcurrencyException.java         # Conflito de concorrência
-│   │   └── DuplicateResourceException.java   # Recurso duplicado
+│   │   ├── BusinessException.java
+│   │   ├── ConcurrencyException.java
+│   │   ├── DuplicateResourceException.java
+│   │   ├── IdempotencyConflictException.java # NOVO: violação de idempotency key
+│   │   ├── InsufficientBalanceException.java
+│   │   └── ResourceNotFoundException.java
 │   ├── repository/
-│   │   └── BeneficioRepository.java          # Spring Data JPA
+│   │   ├── BeneficioRepository.java          # ATUALIZADO: findByIdIncluindoDeletados (native)
+│   │   └── TransferenciaRepository.java      # NOVO: findByBeneficioId, findByCorrelacaoId
 │   └── service/
-│       ├── BeneficioService.java             # Interface do serviço
+│       ├── BeneficioService.java             # ATUALIZADO: removerComMotivo, restaurar
+│       ├── TransferenciaService.java         # NOVO: interface de transferências
 │       └── impl/
-│           └── BeneficioServiceImpl.java     # Implementação do serviço
-└── BeneficioApiApplication.java              # Classe principal
+│           ├── BeneficioServiceImpl.java     # ATUALIZADO: @CacheEvict, soft delete, delegate
+│           └── TransferenciaServiceImpl.java # NOVO: lógica financeira + idempotência + métricas
+└── BeneficioApiApplication.java
 ```
 
 ### Frontend (Angular)
@@ -348,18 +370,24 @@ backend-module/src/main/java/com/bip/beneficio/
 ```
 frontend/src/app/
 ├── core/
+│   ├── components/
+│   │   └── toast/
+│   │       └── toast.component.ts            # NOVO: notificações globais
 │   ├── interceptors/
-│   │   └── error.interceptor.ts              # Interceptor de erros HTTP
+│   │   ├── error.interceptor.ts              # Interceptor de erros HTTP
+│   │   └── loading.interceptor.ts            # NOVO: barra de progresso global
 │   ├── models/
 │   │   └── beneficio.model.ts                # Interfaces TypeScript
 │   └── services/
-│       └── beneficio.service.ts              # Service HTTP
+│       ├── beneficio.service.ts              # Service HTTP
+│       ├── loading.service.ts                # NOVO: estado de loading global
+│       └── toast.service.ts                  # NOVO: notificações (success/error/warning)
 ├── features/
 │   └── beneficios/
-│       ├── beneficio-list/                   # Lista de benefícios
+│       ├── beneficio-list/                   # ATUALIZADO: usa ToastService
 │       ├── beneficio-form/                   # Formulário CRUD
 │       └── transferencia-form/               # Formulário transferência
-└── app.component.ts                          # Componente raiz
+└── app.component.ts                          # ATUALIZADO: barra de loading + toast global
 ```
 
 ---
@@ -644,9 +672,16 @@ Content-Type: application/json
 }
 ```
 
-#### Remover Benefício
+#### Remover Benefício (Soft Delete)
 ```http
-DELETE /api/v1/beneficios/1
+DELETE /api/v1/beneficios/1?motivo=Encerrado+por+reestruturacao
+```
+
+> O registro **não é deletado fisicamente**. O campo `deletadoEm` é preenchido e o registro fica invisível para consultas normais, mas preservado para auditoria.
+
+#### Restaurar Benefício
+```http
+PATCH /api/v1/beneficios/1/restaurar
 ```
 
 #### Ativar Benefício
@@ -659,30 +694,85 @@ PATCH /api/v1/beneficios/1/ativar
 PATCH /api/v1/beneficios/1/desativar
 ```
 
-### Transferência
-
+#### Buscar Metadados (Cacheado)
 ```http
-POST /api/v1/beneficios/transferir
+GET /api/v1/beneficios/metadata?nome=vale&page=0&size=10
+```
+
+> Retorna apenas `id`, `nome`, `descricao`, `ativo` — **sem o campo `valor`**. Resultado cacheado por 5 minutos. Use `GET /{id}` para saldo atualizado.
+
+#### Histórico de Transferências do Benefício
+```http
+GET /api/v1/beneficios/1/historico?page=0&size=20
+```
+
+### Transferências (Novo — Auditoria Completa)
+
+#### Realizar Transferência (com idempotência)
+```http
+POST /api/v1/transferencias
 Content-Type: application/json
 
 {
   "origemId": 1,
   "destinoId": 2,
-  "valor": 100.00
+  "valor": 100.00,
+  "correlacaoId": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
+
+> O campo `correlacaoId` é opcional. Se não informado, é gerado automaticamente. Reenviar a mesma requisição com o mesmo `correlacaoId` retorna o resultado original **sem reprocessar** — essencial para sistemas com retry automático.
 
 **Response Success**:
 ```json
 {
   "sucesso": true,
-  "mensagem": "Transferência realizada com sucesso",
+  "mensagem": "Transferência concluida",
   "valorTransferido": 100.00,
   "saldoOrigem": 700.00,
   "saldoDestino": 1100.00,
-  "dataTransferencia": "2024-04-11T10:30:00"
+  "dataTransferencia": "2024-04-11T10:30:00",
+  "transferenciaId": 42,
+  "correlacaoId": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
+
+#### Listar Todas as Transferências (Auditoria)
+```http
+GET /api/v1/transferencias?page=0&size=20
+```
+
+**Response** (TransferenciaAuditoriaDTO):
+```json
+{
+  "content": [{
+    "id": 42,
+    "correlacaoId": "550e8400-e29b-41d4-a716-446655440000",
+    "origemId": 1,
+    "destinoId": 2,
+    "valor": 100.00,
+    "status": "CONCLUIDA",
+    "saldoOrigemAntes": 800.00,
+    "saldoOrigemDepois": 700.00,
+    "saldoDestinoAntes": 1000.00,
+    "saldoDestinoDepois": 1100.00,
+    "motivoFalha": null,
+    "iniciadaEm": "2024-04-11T10:30:00",
+    "finalizadaEm": "2024-04-11T10:30:00.123"
+  }]
+}
+```
+
+#### Buscar por Chave de Correlação
+```http
+GET /api/v1/transferencias/correlacao/550e8400-e29b-41d4-a716-446655440000
+```
+
+#### Endpoint Legado (Retrocompatibilidade)
+```http
+POST /api/v1/beneficios/transferir
+```
+> Mantido por retrocompatibilidade. Internamente delega para `POST /v1/transferencias`. **Prefira o novo endpoint.**
 
 **Response Error (Saldo Insuficiente)**:
 ```json
@@ -1174,36 +1264,319 @@ public class GlobalExceptionHandler {
 
 ---
 
+## Decisões de Nível Sênior: Além do Desafio
+
+Esta seção documenta as decisões técnicas das melhorias adicionadas além dos requisitos do desafio, com justificativas baseadas em práticas reais do setor financeiro.
+
+### Por que Transferência é uma Entidade de Domínio, não um Log?
+
+**O problema da abordagem "operação com efeito colateral"**:
+
+Uma transferência implementada apenas como método que debita/credita saldos parece suficiente — mas falha em produção no primeiro dia de auditoria regulatória:
+
+```
+Auditor: "Qual era o saldo do benefício 42 no momento da transferência das 14:37:22?"
+Sistema: "Não sei. Só registro os saldos atuais."
+```
+
+Isso não é aceitável no setor financeiro. Bacen, auditores e conformidade LGPD exigem **rastreabilidade completa e imutável** de cada movimentação.
+
+**A solução: Transferência como entidade de primeira classe**
+
+```java
+@Entity
+public class Transferencia {
+    private TransferenciaStatus status; // Máquina de estados
+
+    // Snapshots imutáveis dos saldos no momento exato da operação
+    private BigDecimal saldoOrigemAntes;
+    private BigDecimal saldoOrigemDepois;
+    private BigDecimal saldoDestinoAntes;
+    private BigDecimal saldoDestinoDepois;
+
+    private LocalDateTime iniciadaEm;
+    private LocalDateTime finalizadaEm;
+}
+```
+
+**Máquina de estados: por que importa?**
+
+```
+PENDENTE → PROCESSANDO → CONCLUIDA
+                      ↘ FALHA
+                      ↘ REVERTIDA
+```
+
+Um status `PENDENTE` por mais de 5 minutos indica transfer travada (sistema caiu mid-transaction). Um status `REVERTIDA` permite reconciliação contábil automática. Sem máquina de estados, o sistema não distingue "transferência em andamento" de "transferência com falha silenciosa".
+
+**Trade-off aceito**: Mais complexidade no `TransferenciaServiceImpl` em troca de auditoria regulatória completa.
+
+---
+
+### Por que Idempotency Key (correlacaoId) é Obrigatória?
+
+**O cenário real que quebra sistemas sem idempotência**:
+
+```
+Cliente →  POST /transferencias {valor: 1000}  →  Servidor
+           [timeout de rede]
+Cliente →  POST /transferencias {valor: 1000}  →  Servidor  ← segundo envio
+           [DUPLICATA: debitou 2.000 em vez de 1.000]
+```
+
+Em sistemas financeiros, retries automáticos são padrão. Circuit breakers, retries exponenciais e reconfigurações de load balancer enviam a mesma requisição múltiplas vezes. Sem idempotência, cada retry cria uma transferência nova.
+
+**A implementação**:
+
+```java
+// Antes de qualquer processamento:
+if (repository.existsByCorrelacaoId(dto.getCorrelacaoId())) {
+    Transferencia existente = repository.findByCorrelacaoId(dto.getCorrelacaoId()).get();
+    if (existente.getStatus() == TransferenciaStatus.CONCLUIDA) {
+        return toDTO(existente); // Retorna resultado original sem reprocessar
+    }
+    throw new IdempotencyConflictException(existente.getCorrelacaoId(), existente.getStatus());
+}
+```
+
+**Por que HTTP 409 para conflito de idempotência?**
+
+RFC 9110 não define um status específico para idempotência, mas 409 Conflict é o consenso da indústria (Stripe, PayPal, Braintree usam o mesmo padrão). O cliente sabe que não deve criar uma nova transferência — deve buscar o status da existente via `GET /v1/transferencias/correlacao/{id}`.
+
+---
+
+### Por que Soft Delete com `@SQLRestriction`?
+
+**O problema do `DELETE` físico em sistemas com auditoria**:
+
+```sql
+-- Um benefício com histórico de 50 transferências é deletado fisicamente:
+DELETE FROM beneficio WHERE id = 42;
+
+-- Resultado:
+SELECT * FROM transferencia WHERE origem_id = 42; -- ORPHAN RECORDS
+-- Relatório contábil: "benefício 42 movimentou R$50.000 em 2024" → IMPOSSÍVEL
+```
+
+A deleção física quebra a integridade histórica da auditoria. Uma entidade que participou de transações financeiras **nunca pode desaparecer do banco**.
+
+**`@SQLRestriction` vs `@Where` (decisão Hibernate 6)**:
+
+```java
+// Hibernate 5 (depreciado):
+@Where(clause = "deletado_em IS NULL")
+
+// Hibernate 6 (Spring Boot 3.x — correto para este projeto):
+@SQLRestriction("deletado_em IS NULL")
+```
+
+A anotação `@SQLRestriction` é aplicada automaticamente em **todas** as queries JPA da entidade — `findById`, `findAll`, qualquer `@Query` JPQL — sem possibilidade de esquecer o filtro em uma nova query. Zero margem para erro de desenvolvedor.
+
+**O problema com native queries para restore**:
+
+`@SQLRestriction` só atua sobre HQL/JPQL. Para restaurar um registro deletado, o `findById` padrão retornaria `Optional.empty()`. A solução é uma native query que contorna o filtro:
+
+```java
+@Query(value = "SELECT * FROM beneficio WHERE id = :id", nativeQuery = true)
+Optional<Beneficio> findByIdIncluindoDeletados(@Param("id") Long id);
+```
+
+**Por que `motivoDesativacao` é campo obrigatório no delete?**
+
+Em produção, o suporte recebe tickets como "por que o benefício X sumiu?". Sem `motivoDesativacao`, a resposta é "não sei". Com ele: "Encerrado em 2024-03-15 — Motivo: Reestruturação departamental conforme RH-2024-42". Rastreabilidade operacional que economiza horas de investigação.
+
+---
+
+### Por que Cache Seletivo — e Por que o `valor` Nunca é Cacheado?
+
+**O erro clássico em sistemas financeiros**:
+
+```
+14:00 — Cache carregado: benefício A tem saldo R$1.000
+14:01 — Transferência debita R$800 do benefício A → banco: R$200
+14:05 — Nova requisição de transferência de R$600 do benefício A
+         Cache: "R$1.000 disponível" → APROVADA
+         Banco: "R$200 disponível" → INCONSISTÊNCIA
+```
+
+Cachear saldo em um sistema financeiro cria a possibilidade de aprovar transferências com fundos insuficientes. É uma vulnerabilidade que passa em todos os testes unitários (que mockam o cache) e só explode em produção sob carga.
+
+**A solução: DTO explicitamente sem saldo**
+
+```java
+/**
+ * DTO de metadados — NUNCA inclui o campo valor/saldo.
+ * Usado exclusivamente em endpoints cacheados.
+ * Para saldo atual, use BeneficioDTO via GET /v1/beneficios/{id} (sem cache).
+ */
+public record BeneficioMetadataDTO(Long id, String nome, String descricao, Boolean ativo) {}
+```
+
+O tipo `BeneficioMetadataDTO` torna **estruturalmente impossível** retornar saldo em um endpoint cacheado. Não é uma convenção que pode ser ignorada — é uma restrição de tipos.
+
+**Configuração Caffeine: por que TTL 5 minutos e máx 500 entradas?**
+
+- TTL 5min: Metadados (nome, descrição) raramente mudam. Autocomplete e filtros de busca toleram 5min de staleness.
+- Máx 500 entradas: Proteção contra cache poisoning em sistemas com muitos benefícios. JVM heap preservado.
+- `recordStats()`: Visibilidade de hit rate via `/actuator/caches` — detecta se o cache está sendo efetivamente utilizado.
+
+---
+
+### Por que Testes de Concorrência Validam Invariantes de Negócio?
+
+**O que testes unitários com mocks NÃO detectam**:
+
+```java
+// Este teste passa 100% do tempo — mesmo com código bugado:
+@Test
+void transferir_deveDebitarOrigem() {
+    when(repository.findByIdWithLock(1L)).thenReturn(Optional.of(origem));
+    service.transferir(dto);
+    verify(repository).save(argThat(b -> b.getValor().equals(new BigDecimal("0"))));
+}
+// O mock nunca vai concorrer consigo mesmo. Race conditions são invisíveis aqui.
+```
+
+Mocks eliminam o tempo — executam instantaneamente, sequencialmente, deterministicamente. São ótimos para lógica de negócio, mas cegos para problemas de concorrência.
+
+**Os três invariantes testados e por que cada um importa**:
+
+**1. Conservação de valor** (invariante contábil fundamental):
+```
+∑ saldos_antes = ∑ saldos_depois, para qualquer número de transferências
+```
+Se este invariante quebra, o sistema "criou" ou "destruiu" dinheiro — fraude contábil independente de intenção.
+
+**2. Ausência de saldo negativo**:
+```
+∀ beneficio: saldo_final ≥ 0
+```
+Com 10 threads concorrentes tentando debitar o mesmo benefício, sem locking correto, múltiplas threads podem ler `saldo = R$100` simultaneamente e cada uma debitar R$100 — resultado: `saldo = -R$900`.
+
+**3. Anti-deadlock com transferências cruzadas**:
+```
+T1: A → B  (Lock A, depois Lock B)
+T2: B → A  (Lock B, depois Lock A)
+```
+Sem ordenação de locks por ID, este padrão cria deadlock garantido. O teste executa 20 pares simultâneos com timeout de 15 segundos — se qualquer thread travar, o teste falha.
+
+**Por que `@SpringBootTest` e não `@DataJpaTest`**:
+
+`@DataJpaTest` usa H2 in-memory com auto-rollback entre testes. Para testes de concorrência, precisamos de transações reais que commitam e são visíveis entre threads — `@SpringBootTest` com `@Transactional` desabilitado por teste, usando `TransactionTemplate` diretamente.
+
+---
+
+### Por que Métricas de Negócio e não Apenas Métricas Técnicas?
+
+**O que métricas técnicas não detectam**:
+
+```
+CPU: 45% — normal
+Heap: 60% — normal
+HTTP 200: 99.9% — normal
+Latência P99: 120ms — normal
+
+Mas: transferencias{status="falha"} subindo de 0 para 50/min nos últimos 10 minutos
+→ Bug introduzido no último deploy está silenciosamente falhando transferências
+→ Usuários recebendo HTTP 422 (validação de negócio) — não aparece como erro técnico
+```
+
+Métricas técnicas registram "o sistema está vivo". Métricas de negócio registram "o sistema está fazendo o que deveria fazer".
+
+**As métricas implementadas e seus casos de uso**:
+
+| Métrica | Tipo | Alarme sugerido |
+|---------|------|-----------------|
+| `transferencias.total{status=sucesso}` | Counter | Taxa cai > 30% vs. média de 1h |
+| `transferencias.total{status=falha}` | Counter | Qualquer valor acima de threshold |
+| `transferencias.concluidas.total` | Gauge | Monitor de crescimento esperado |
+
+**Por que Counter e não Gauge para `transferencias.total`?**
+
+Counters são monotonicamente crescentes — ideais para taxa de eventos. Gauges sobem e descem — ideais para estado atual (ex: tamanho da fila). Para contagem de transferências realizadas, Counter com `increment()` é o tipo correto: permite calcular taxa de transferências por minuto via `rate()` no Prometheus.
+
+---
+
+### Por que Loading Global e Toast Notifications no Frontend?
+
+**O problema de UX específico de sistemas financeiros**:
+
+Em e-commerce, clicar duas vezes num botão "Adicionar ao carrinho" apenas duplica um item — fácil de corrigir. Em sistemas financeiros, clicar duas vezes em "Transferir" pode significar duas transferências de R$10.000. A ambiguidade de UX tem custo financeiro direto.
+
+**O Loading Interceptor como prevenção de duplo-clique**:
+
+```typescript
+// Sem interceptor: cada componente gerencia seu próprio estado
+// Resultado: botões ficam ativos durante a requisição, usuário pode clicar novamente
+
+// Com interceptor: estado centralizado, visível para toda a aplicação
+export const loadingInterceptor: HttpInterceptorFn = (req, next) => {
+  const loadingService = inject(LoadingService);
+  loadingService.show(); // Incrementa contador de requisições ativas
+  return next(req).pipe(
+    finalize(() => loadingService.hide()) // Decrementa, mesmo em erro
+  );
+};
+```
+
+A barra de progresso global é um sinal visual claro: "o sistema está processando, aguarde". Elimina a incerteza que leva o usuário a clicar novamente.
+
+**Toast Notifications vs. mensagens inline**:
+
+Mensagens inline (`@if (mensagem())` em cada componente) têm dois problemas:
+1. O usuário precisa olhar para o lugar certo na tela para ver o feedback
+2. Navegando para outra tela, a mensagem desaparece sem ser vista
+
+Toasts aparecem sempre no mesmo lugar (bottom-right), são visíveis independente do conteúdo da página, e persistem por 5 segundos — tempo suficiente para leitura mas sem bloquear o fluxo de trabalho.
+
+**Modal de confirmação antes de delete**:
+
+```
+"Tem certeza que deseja excluir o benefício 'Vale Alimentação Premium'?"
+```
+
+Mostrar o nome do benefício no modal confirma que o usuário está excluindo o registro correto — não apenas "o benefício ID 42". Em sistemas com dados reais, essa confirmação previne exclusões acidentais de registros errados.
+
+---
+
 ## Conclusão
 
-Este projeto implementa uma solução robusta e completa para gerenciamento de benefícios, corrigindo todos os problemas identificados no código EJB original e adicionando funcionalidades modernas.
+Este projeto entrega uma solução que vai além dos requisitos técnicos do desafio, implementando padrões que diferenciam sistemas financeiros de produção de aplicações CRUD simples.
 
-**Principais Destaques**:
+**Critérios do Desafio Atendidos**:
 
-- ✅ Arquitetura em camadas bem definida
-- ✅ Controle de concorrência robusto (Pessimistic + Optimistic)
-- ✅ Validações abrangentes (Bean Validation + Business Logic)
-- ✅ API REST bem documentada (OpenAPI/Swagger)
-- ✅ Frontend moderno (Angular 18)
+- ✅ Arquitetura em camadas bem definida (DB, EJB, Backend, Frontend)
+- ✅ Correção completa do bug EJB (6 problemas identificados e resolvidos)
+- ✅ CRUD completo de benefícios
+- ✅ Transferência de valores entre benefícios
+- ✅ API REST documentada (OpenAPI/Swagger)
+- ✅ Frontend Angular 18 com formulários reativos
 - ✅ Testes automatizados (Unit + Integration)
-- ✅ Tratamento de erros consistente
-- ✅ Código limpo e bem documentado
+- ✅ Docker Compose e CI/CD
+
+**Melhorias de Nível Sênior (além do desafio)**:
+
+- ✅ **Auditoria completa de transferências**: Entidade `Transferencia` com máquina de estados, snapshots de saldo antes/depois, rastreabilidade regulatória
+- ✅ **Idempotência**: `correlacaoId` UUID previne duplicatas em cenários de retry
+- ✅ **Soft Delete com rastreabilidade**: `@SQLRestriction` + `motivoDesativacao`, integridade histórica preservada
+- ✅ **Cache seletivo seguro**: Caffeine para metadados, campo `valor` explicitamente excluído do cache por design de tipos
+- ✅ **Testes de concorrência com invariantes de negócio**: Conservação de valor, ausência de saldo negativo, anti-deadlock comprovados sob carga real
+- ✅ **Observabilidade de negócio**: Métricas Micrometer/Prometheus para detecção de anomalias além de métricas técnicas
+- ✅ **UX financeira**: Loading global + toast notifications eliminam ambiguidade em operações monetárias
 
 **Decisões Técnicas Justificadas**:
 
-- Anemic Domain Model: Padrão de mercado, facilita manutenção
-- Duplo Locking: Defesa em profundidade
-- Isolamento SERIALIZABLE: Consistência em operações financeiras
-- Ordenação de Locks: Prevenção de deadlocks
-- MapStruct: Performance e type safety
-- Global Exception Handler: Centralização e consistência
-
-**Diferenciais**:
-
-- Correção completa do bug original (6 problemas identificados e resolvidos)
-- Documentação técnica detalhada
-- Código production-ready
-- Padrões de mercado (Spring Boot, Angular, Docker)
+| Decisão | Alternativa rejeitada | Motivo |
+|---------|-----------------------|--------|
+| Anemic Domain Model | Rich Domain Model | Padrão predominante em Java corporativo, facilita onboarding |
+| Pessimistic + Optimistic Lock | Apenas Optimistic | Defesa em profundidade para operações financeiras críticas |
+| Isolamento SERIALIZABLE | REPEATABLE_READ | Elimina phantom reads — consistência absoluta em transferências |
+| Ordenação de locks por ID | Ordem arbitrária | Prevenção determinística de deadlock |
+| MapStruct | Mapeamento manual / ModelMapper | Compile-time type safety, zero reflection |
+| `@SQLRestriction` vs `@Where` | `@Where` (Hibernate 5) | Hibernte 6 (Spring Boot 3.x) — API atualizada |
+| `BeneficioMetadataDTO` sem `valor` | Filtrar campo no controller | Restrição estrutural: impossível cachear saldo por design de tipos |
+| Native query para restore | JPQL com hint | `@SQLRestriction` é transparente para JPQL — native é a única alternativa correta |
+| Counter para transferências | Gauge | Counters permitem calcular taxa via `rate()` no Prometheus |
 
 ---
 

@@ -1,12 +1,21 @@
-import { Component } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
 import { CommonModule } from '@angular/common';
+import { ToastComponent } from './core/components/toast/toast.component';
+import { LoadingService } from './core/services/loading.service';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, RouterOutlet, RouterLink, RouterLinkActive],
+  imports: [CommonModule, RouterOutlet, RouterLink, RouterLinkActive, ToastComponent],
   template: `
+    <!-- Barra de progresso global — aparece durante qualquer requisição HTTP -->
+    @if (loadingService.isLoading()) {
+      <div class="global-loading-bar"></div>
+    }
+
+    <app-toast />
+
     <div class="app-container">
       <header class="header">
         <div class="header-content">
@@ -41,6 +50,23 @@ import { CommonModule } from '@angular/common';
     </div>
   `,
   styles: [`
+    .global-loading-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--primary-color), #60a5fa, var(--primary-color));
+      background-size: 200% 100%;
+      animation: loadingBar 1.2s linear infinite;
+      z-index: 9999;
+    }
+
+    @keyframes loadingBar {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
     .app-container {
       min-height: 100vh;
       display: flex;
@@ -142,4 +168,5 @@ import { CommonModule } from '@angular/common';
 })
 export class AppComponent {
   title = 'Benefícios';
+  readonly loadingService = inject(LoadingService);
 }

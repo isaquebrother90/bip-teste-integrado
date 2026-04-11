@@ -30,4 +30,10 @@ public class TransferenciaResultadoDTO {
 
     @Schema(description = "Data/hora da transferência")
     private LocalDateTime dataTransferencia;
+
+    @Schema(description = "ID da transferência registrada (para consulta de auditoria)")
+    private Long transferenciaId;
+
+    @Schema(description = "Chave de correlação/idempotência")
+    private String correlacaoId;
 }

@@ -49,10 +49,21 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,caches
   endpoint:
     health:
       show-details: when_authorized
+    caches:
+      enabled: true
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: Benefício API
+    version: 2.0.0
+    description: API de gerenciamento de benefícios corporativos
 
 springdoc:
   api-docs:

@@ -2,6 +2,7 @@ package com.bip.beneficio.api.mapper;
 
 import com.bip.beneficio.api.dto.BeneficioCreateDTO;
 import com.bip.beneficio.api.dto.BeneficioDTO;
+import com.bip.beneficio.api.dto.BeneficioMetadataDTO;
 import com.bip.beneficio.api.dto.BeneficioUpdateDTO;
 import com.bip.beneficio.domain.entity.Beneficio;
 import org.mapstruct.*;
@@ -14,6 +15,13 @@ public interface BeneficioMapper {
     BeneficioDTO toDTO(Beneficio entity);
 
     List<BeneficioDTO> toDTOList(List<Beneficio> entities);
+
+    /** Mapeamento para metadados — omite o campo valor intencionalmente. */
+    @Mapping(target = "id", source = "id")
+    @Mapping(target = "nome", source = "nome")
+    @Mapping(target = "descricao", source = "descricao")
+    @Mapping(target = "ativo", source = "ativo")
+    BeneficioMetadataDTO toMetadataDTO(Beneficio entity);
 
     @Mapping(target = "id", ignore = true)
     @Mapping(target = "version", ignore = true)
