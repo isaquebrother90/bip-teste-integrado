@@ -187,9 +187,9 @@ npm run test:ci             # Testes CI (headless)
 
 ---
 
-## Além do Desafio: Melhorias de Nível Sênior
+## Melhorias além do desafio
 
-As funcionalidades abaixo **não foram solicitadas** no desafio técnico. Foram adicionadas para demonstrar domínio de práticas que **empresas do setor financeiro exigem em produção** — e que diferenciam um desenvolvedor sênior de um pleno.
+As funcionalidades abaixo não foram solicitadas no desafio técnico. Foram adicionadas por serem práticas comuns em sistemas financeiros em produção.
 
 ### 1. Transferência como Domínio de Primeira Classe
 
