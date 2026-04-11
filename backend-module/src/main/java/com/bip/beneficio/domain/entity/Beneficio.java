@@ -1,0 +1,69 @@
+package com.bip.beneficio.domain.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+/**
+ * Entidade que representa um benefício no sistema.
+ *
+ * <p>Utiliza <b>Optimistic Locking</b> através do campo {@code version} para prevenir
+ * lost updates em operações concorrentes. Em operações críticas como transferências,
+ * também é utilizado Pessimistic Locking no repositório.</p>
+ *
+ * <p>A lógica de negócio (validações, débito, crédito) está implementada na camada de serviço.</p>
+ *
+ * @see com.bip.beneficio.domain.service.BeneficioService Service com lógica de negócio
+ * @see com.bip.beneficio.domain.repository.BeneficioRepository Repository com pessimistic lock
+ */
+@Entity
+@Table(name = "beneficio", indexes = {
+        @Index(name = "idx_beneficio_nome", columnList = "nome"),
+        @Index(name = "idx_beneficio_ativo", columnList = "ativo")
+})
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@EqualsAndHashCode(of = "id")
+@ToString(exclude = {"descricao"})
+public class Beneficio {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "nome", nullable = false, length = 100)
+    private String nome;
+
+    @Column(name = "descricao", length = 255)
+    private String descricao;
+
+    @Column(name = "valor", nullable = false, precision = 15, scale = 2)
+    private BigDecimal valor;
+
+    @Column(name = "ativo", nullable = false)
+    @Builder.Default
+    private Boolean ativo = true;
+
+    /**
+     * Campo de versão para Optimistic Locking.
+     * Previne lost updates em operações concorrentes.
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
+
+    @CreationTimestamp
+    @Column(name = "criado_em", updatable = false)
+    private LocalDateTime criadoEm;
+
+    @UpdateTimestamp
+    @Column(name = "atualizado_em")
+    private LocalDateTime atualizadoEm;
+}

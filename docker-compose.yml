@@ -1,0 +1,69 @@
+services:
+  # Banco de dados PostgreSQL
+  database:
+    image: postgres:16-alpine
+    container_name: beneficio-db
+    environment:
+      POSTGRES_DB: beneficiodb
+      POSTGRES_USER: beneficio
+      POSTGRES_PASSWORD: beneficio123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beneficio -d beneficiodb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - beneficio-network
+
+  # Backend Spring Boot
+  backend:
+    build:
+      context: ./backend-module
+      dockerfile: Dockerfile
+    container_name: beneficio-api
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DATABASE_URL: jdbc:postgresql://database:5432/beneficiodb
+      DATABASE_USERNAME: beneficio
+      DATABASE_PASSWORD: beneficio123
+      DATABASE_DRIVER: org.postgresql.Driver
+    ports:
+      - "8080:8080"
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - beneficio-network
+
+  # Frontend Angular
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: beneficio-web
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - beneficio-network
+
+volumes:
+  postgres_data:
+
+networks:
+  beneficio-network:
+    driver: bridge
