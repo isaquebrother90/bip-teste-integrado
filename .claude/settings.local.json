@@ -32,7 +32,10 @@
       "Bash(start \"\" \"C:\\\\projetos\\\\MeusAgentes\\\\BuildProjects\\\\bip-teste-integrado\\\\backend-module\\\\target\\\\site\\\\jacoco\\\\index.html\")",
       "Bash(find:*)",
       "Bash(grep:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nrefactor: implement complete fullstack solution for benefits management\n\n- Implement Spring Boot backend with layered architecture\n- Create Angular frontend with reactive forms and service layer\n- Add comprehensive concurrency controls \\(pessimistic + optimistic locking\\)\n- Implement SERIALIZABLE isolation level for transfers\n- Add lock ordering to prevent deadlocks\n- Create global exception handler with proper error responses\n- Add MapStruct for DTO/Entity mapping\n- Create comprehensive technical documentation \\(DOCUMENTACAO_COMPLETA_BIP.md\\)\n- Add Docker support for backend, frontend and PostgreSQL\n- Configure GitHub Actions CI/CD pipeline\n- Update database schema with optimistic locking support\n- Remove empty example package structure\n- Formalize all code comments\n\nBREAKING CHANGE: Complete architectural refactoring from legacy EJB to modern Spring Boot application\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git restore:*)"
     ]
   }
 }
