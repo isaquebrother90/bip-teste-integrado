@@ -295,7 +295,6 @@ As funcionalidades abaixo não foram solicitadas no desafio técnico. Foram adic
 Para detalhes de implementação, decisões arquiteturais e explicações técnicas aprofundadas:
 
 - [`docs/DOCUMENTACAO_COMPLETA_BIP.md`](docs/DOCUMENTACAO_COMPLETA_BIP.md) — Documentação técnica completa
-- [`docs/SESSOES.md`](docs/SESSOES.md) — Log de sessões e progresso do desenvolvimento
 - `http://localhost:8080/api/swagger-ui.html` — Documentação interativa da API
 
 ## Autor
