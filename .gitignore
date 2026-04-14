@@ -118,3 +118,7 @@ coverage/
 *.temp
 *.swp
 *~
+
+# Claude Code
+.claude/
+CLAUDE.md
